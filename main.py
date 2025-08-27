@@ -1,10 +1,11 @@
+
 import os
+import asyncio
 from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from docx2pdf import convert
 import zipfile
-import asyncio
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
@@ -17,9 +18,7 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batch_storage[update.effective_chat.id] = []
     await update.message.reply_text(
-        "Send me DOC/DOCX files. You can send multiple messages. "
-        "When done, send /done to get a single ZIP with all PDFs! "
-        f"Files larger than {MAX_FILE_SIZE // (1024*1024)} MB will be skipped."
+        "Send me DOC/DOCX files. Send /done when finished to get a ZIP."
     )
 
 # Handle files
@@ -29,25 +28,22 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         batch_storage[chat_id] = []
 
     file = update.message.document
-
     if file.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"File {file.file_name} is too large ({file.file_size // (1024*1024)} MB) and was skipped.")
+        await update.message.reply_text(f"{file.file_name} is too large and was skipped.")
         return
 
     file_obj = await file.get_file()
-    file_name = file.file_name
-    file_path = f"/tmp/{file_name}"
+    file_path = f"/tmp/{file.file_name}"
     await file_obj.download_to_drive(file_path)
-
     pdf_path = file_path.replace(".docx", ".pdf").replace(".doc", ".pdf")
+
     try:
-        msg = await update.message.reply_text(f"Converting {file_name}...")
         convert(file_path, pdf_path)
         batch_storage[chat_id].append(pdf_path)
         os.remove(file_path)
-        await msg.edit_text(f"{file_name} converted successfully! Total files in batch: {len(batch_storage[chat_id])}")
+        await update.message.reply_text(f"{file.file_name} converted successfully!")
     except Exception as e:
-        await update.message.reply_text(f"Error converting {file_name}: {e}")
+        await update.message.reply_text(f"Error converting {file.file_name}: {e}")
 
 # /done command
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,7 +51,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pdf_paths = batch_storage.get(chat_id, [])
 
     if not pdf_paths:
-        await update.message.reply_text("No files in batch. Send DOC/DOCX first!")
+        await update.message.reply_text("No files to convert.")
         return
 
     zip_path = f"/tmp/batch_{chat_id}.zip"
@@ -63,7 +59,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for pdf in pdf_paths:
             zipf.write(pdf, os.path.basename(pdf))
 
-    await update.message.reply_document(document=open(zip_path, "rb"))
+    await update.message.reply_document(open(zip_path, "rb"))
 
     for pdf in pdf_paths:
         if os.path.exists(pdf):
@@ -73,29 +69,29 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     batch_storage[chat_id] = []
 
-# Flask webhook
+# Flask webhook endpoint
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(force=True)
-    update = Update.de_json(data, application.bot)
-    asyncio.run(application.update_queue.put(update))
+    update = Update.de_json(data, bot)
+    asyncio.run(app_bot.update_queue.put(update))
     return "OK"
 
 @app.route("/")
 def index():
     return "Bot is running!"
 
-# Telegram application
-application = ApplicationBuilder().token(TOKEN).build()
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("done", done))
-application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+# Create Application manually (webhook-only)
+app_bot = Application.builder().token(TOKEN).build()
+bot = app_bot.bot
+
+# Add handlers
+app_bot.add_handler(CommandHandler("start", start))
+app_bot.add_handler(CommandHandler("done", done))
+app_bot.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
 # Set webhook
-async def set_webhook():
-    await application.bot.set_webhook(WEBHOOK_URL)
-
-asyncio.run(set_webhook())
+asyncio.run(bot.set_webhook(WEBHOOK_URL))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
