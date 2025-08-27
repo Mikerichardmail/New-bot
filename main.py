@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from docx2pdf import convert
 import zipfile
+import asyncio
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
@@ -75,24 +76,26 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Flask webhook
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    from telegram import Update
-    from telegram.ext import ApplicationBuilder
-
     data = request.get_json(force=True)
     update = Update.de_json(data, application.bot)
-    application.update_queue.put(update)
+    asyncio.run(application.update_queue.put(update))
     return "OK"
 
 @app.route("/")
 def index():
     return "Bot is running!"
 
-# Build the Telegram application
+# Telegram application
 application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("done", done))
 application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-application.bot.set_webhook(WEBHOOK_URL)
+
+# Set webhook
+async def set_webhook():
+    await application.bot.set_webhook(WEBHOOK_URL)
+
+asyncio.run(set_webhook())
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
